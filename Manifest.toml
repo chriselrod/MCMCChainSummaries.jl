@@ -85,12 +85,6 @@ git-tree-sha1 = "aef8983c0f77c84ae77ced1bb3ecf5ab7d687700"
 uuid = "59287772-0a20-5a39-b81b-1366585eb4c0"
 version = "0.4.0"
 
-[[Indexing]]
-deps = ["Test"]
-git-tree-sha1 = "0cf3ac621cd74b1d03af0cc4275f680b2070a5cc"
-uuid = "313cdc1a-70c2-5d6a-ae34-0150d3930a38"
-version = "1.1.0"
-
 [[InteractiveUtils]]
 deps = ["Markdown"]
 uuid = "b77e0a4c-d291-57a0-90e8-8db25a27a240"
@@ -201,12 +195,6 @@ uuid = "6462fe0b-24de-5631-8697-dd941f90decc"
 deps = ["LinearAlgebra", "Random"]
 uuid = "2f01184e-e22b-5df5-ae63-d93ebab69eaf"
 
-[[SplitApplyCombine]]
-deps = ["Indexing", "Test"]
-git-tree-sha1 = "72eb364378c17e0f3dcde342b2953ad2bd55b5a1"
-uuid = "03a91e81-4c3e-53e1-a0a4-9c0c8f19dd66"
-version = "0.4.1"
-
 [[Statistics]]
 deps = ["LinearAlgebra", "SparseArrays"]
 uuid = "10745b16-79ce-11e8-11f9-7d13ad32a3b2"
@@ -231,12 +219,6 @@ uuid = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
 git-tree-sha1 = "dfcdbbfb2d0370716c815cbd6f8a364efb6f42cf"
 uuid = "0796e94c-ce3b-5d07-9a54-7f471281c624"
 version = "0.5.6"
-
-[[TypedTables]]
-deps = ["SplitApplyCombine", "Tables", "Unicode"]
-git-tree-sha1 = "519533acaccc7d84e214426f69820489e1f46617"
-uuid = "9d95f2ec-7b3d-5a63-8d20-e2491e220bb9"
-version = "1.2.0"
 
 [[UUIDs]]
 deps = ["Random", "SHA"]
