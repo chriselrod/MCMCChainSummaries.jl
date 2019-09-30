@@ -34,11 +34,11 @@ const MINOR_QTLE = Highlighter( (data,i,j) -> (((j == 3) | (j == 5)) && signbit(
     
 function Base.show(io::IO, s::Summary; kwargs...)
     if s.header === SUMMARY_HEADER
-        pretty_table(io, s.summary, s.header; highlighters = (LARGE_DIFF, SMALL_NEFF, PSRF_ALERT), crop = :none )
+        pretty_table(io, s, s.header; highlighters = (LARGE_DIFF, SMALL_NEFF, PSRF_ALERT), crop = :none )
     elseif s.header === STANDARD_QUANTILES_HEADER
-        pretty_table(io, s.summary, s.header; highlighters = (MINOR_QTLE, EXTREME_QT), crop = :none )
+        pretty_table(io, s, s.header; highlighters = (MINOR_QTLE, EXTREME_QT), crop = :none )
     else
-        pretty_table(io, s.summary, s.header; crop = :none )
+        pretty_table(io, s, s.header; crop = :none )
     end
 end
 function Base.show(io::IO, s::MCMCChainSummary)
@@ -304,6 +304,7 @@ function MCMCChainSummary(chains_in::AbstractArray{Float64,3}, parameter_names::
         summary[d,4] = ess_d
         summary[d,3] = sqrt_d / sqrt(ess_d)
     end
+    NQ = length(quantiles)
     dquantiles = Matrix{Float64}(undef, D, NQ)
     if NQ > 0
         sorted_samples =  sort!(copy(reshape(chains,(D,N*C))'), dims = 1)
@@ -313,7 +314,7 @@ function MCMCChainSummary(chains_in::AbstractArray{Float64,3}, parameter_names::
     end
     MCMCChainSummary(
         Summary(parameter_names, SUMMARY_HEADER, summary),
-        Summary(parameter_names, quantile_names(q), dquantiles)
+        Summary(parameter_names, quantile_names(quantiles), dquantiles)
     )
 end
 
