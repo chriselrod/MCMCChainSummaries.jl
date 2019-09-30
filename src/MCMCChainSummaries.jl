@@ -1,18 +1,23 @@
 module MCMCChainSummaries
 
-using VectorizationBase, SIMDPirates#, PaddedMatrices
-# using ProbabilityModels
+using VectorizationBase, SIMDPirates
 using Statistics, FFTW
 using PrettyTables
+
+export MCMCChainSummary
 
 const SUMMARY_HEADER = ["Parameter", "Mean", "St.Dev.", "MCMC SE", "ESS", "PSRF"]
 const STANDARD_QUANTILES_HEADER = ["Parameter", "2.5%", "25%", "50%", "75%", "97.5"]
 
+const SIGFIGS = Ref(5)
+
 # abstract type AbstractSummary <: AbstractMatrix{Union{String,Float64}} end
-struct Summary <: AbstractMatrix{Union{String,Float64}}#<: AbstractSummary
+struct Summary <: AbstractMatrix{String}#<: AbstractSummary
     parameter_names::Vector{String}
     header::Vector{String}
     summary::Matrix{Float64}
+    number_samples::Int
+    number_chains::Int
 end
 # struct Quantiles <: AbstractSummary
 #     parameter_names::Vector{String}
@@ -24,24 +29,26 @@ struct MCMCChainSummary
     quantiles::Summary
 end
 Base.size(s::Summary) = size(s.summary) .+ (0,1)
-Base.getindex(s::Summary, i, j) = j == 1 ? s.parameter_names[i] : s.summary[i, j-1]
+Base.getindex(s::Summary, i, j) = j == 1 ? s.parameter_names[i] : string(round(s.summary[i, j-1], sigdigits = SIGFIGS[]))
 
-const LARGE_DIFF = Highlighter( (data,i,j) -> (j == 2 && data.summary[i,1] / data.summary[i,2] > 2 ), bold = false, foreground = :green )
-const SMALL_NEFF = Highlighter( (data,i,j) -> (j == 5 && data.summary[i,4] < 100 ), bold = false, foreground = :red )
+# const LARGE_DIFF = Highlighter( (data,i,j) -> (j == 2 && data.summary[i,1] / data.summary[i,2] > 2 ), bold = false, foreground = :green )
+const SMALL_NEFF = Highlighter( (data,i,j) -> (j == 5 && data.summary[i,4] < 0.1 * (data.number_samples*data.number_chains) ), bold = false, foreground = :red )
 const PSRF_ALERT = Highlighter( (data,i,j) -> (j == 6 && data.summary[i,5] > 1.1 ), bold =  true, foreground = :red )
-const EXTREME_QT = Highlighter( (data,i,j) -> (((j == 2) | (j == 6)) && signbit(data.summary[i,j-1]) == (4<j) ), bold =  true, foreground = :green )
-const MINOR_QTLE = Highlighter( (data,i,j) -> (((j == 3) | (j == 5)) && signbit(data.summary[i,j-1]) == (4<j) ), bold = false, foreground = :green )
+# const EXTREME_QT = Highlighter( (data,i,j) -> (((j == 2) | (j == 6)) && signbit(data.summary[i,j-1]) == (4<j) ), bold =  true, foreground = :green )
+# const MINOR_QTLE = Highlighter( (data,i,j) -> (((j == 3) | (j == 5)) && signbit(data.summary[i,j-1]) == (4<j) ), bold = false, foreground = :green )
     
 function Base.show(io::IO, s::Summary; kwargs...)
     if s.header === SUMMARY_HEADER
-        pretty_table(io, s, s.header; highlighters = (LARGE_DIFF, SMALL_NEFF, PSRF_ALERT), crop = :none )
-    elseif s.header === STANDARD_QUANTILES_HEADER
-        pretty_table(io, s, s.header; highlighters = (MINOR_QTLE, EXTREME_QT), crop = :none )
+        # pretty_table(io, s, s.header; highlighters = (LARGE_DIFF, SMALL_NEFF, PSRF_ALERT), crop = :none )
+        pretty_table(io, s, s.header; highlighters = (SMALL_NEFF, PSRF_ALERT), crop = :none )
+    # elseif s.header === STANDARD_QUANTILES_HEADER
+    #     pretty_table(io, s, s.header; highlighters = (MINOR_QTLE, EXTREME_QT), crop = :none )
     else
         pretty_table(io, s, s.header; crop = :none )
     end
 end
 function Base.show(io::IO, s::MCMCChainSummary)
+    println("$(s.summary.number_chains) chains of $(s.summary.number_samples) samples.")
     # ss = s.summary; sq = s.quantiles
     # pretty_table(io, ss, ss.header; highlighters = (LARGE_DIFF, SMALL_NEFF, PSRF_ALERT), crop = :none)
     # pretty_table(io, sq, sq.header; highlighters = (MINOR_QTLE, EXTREME_QT), crop = :none )
@@ -312,11 +319,16 @@ function MCMCChainSummary(chains_in::AbstractArray{Float64,3}, parameter_names::
             dquantiles[d,:] .= quantile(@view(sorted_samples[:,d]), quantiles, sorted = true)
         end
     end
+    D, N, C = size(chains_in)
     MCMCChainSummary(
-        Summary(parameter_names, SUMMARY_HEADER, summary),
-        Summary(parameter_names, quantile_names(quantiles), dquantiles)
+        Summary(parameter_names, SUMMARY_HEADER, summary, N, C),
+        Summary(parameter_names, quantile_names(quantiles), dquantiles, N, C)
     )
 end
 
+function MCMCChainSummary(chains_in::AbstractMatrix{Float64}, parameter_names::Vector{String}, quantiles = (0.025, 0.25, 0.5, 0.75, 0.975))
+    M, N = size(chains_in)
+    MCMCChainSummary(reshape(chains_in, (M,N,1)), parameter_names, quantiles)
+end
 
 end # module
