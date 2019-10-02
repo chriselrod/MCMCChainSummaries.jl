@@ -305,11 +305,11 @@ function MCMCChainSummary(chains_in::AbstractArray{Float64,3}, parameter_names::
             p_d = vfmadd(sinvC, ρ₊_d + ρ₋_d, bwa_d + bwa_d ) * prec_d
             # tau_j =  vadd(tau_j, p_j)
             tau_d =  muladd(2.0, p_d, tau_d)
-            tau_d > 0.0 || break
+            p_d > 0.0 || break
         end
         ess_d = sNC / tau_d
         summary[d,4] = ess_d
-        summary[d,3] = sqrt_d / sqrt(ess_d)
+        summary[d,3] = sqrt_d / Base.FastMath.sqrt_fast(ess_d)
     end
     NQ = length(quantiles)
     dquantiles = Matrix{Float64}(undef, D, NQ)
