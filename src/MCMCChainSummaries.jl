@@ -331,4 +331,12 @@ function MCMCChainSummary(chains_in::AbstractMatrix{Float64}, parameter_names::V
     MCMCChainSummary(reshape(chains_in, (M,N,1)), parameter_names, quantiles)
 end
 
+Statistics.mean(chn_sum::MCMCChainSummary) = chn_sum.summary.summary[:,1]
+Statistics.std(chn_sum::MCMCChainSummary) = chn_sum.summary.summary[:,2]
+function Statistics.median(chn_sum::MCMCChainSummary)
+    q = chn_sum.quantiles
+    q.header === STANDARD_QUANTILES_HEADER && return q.summary[:,3]
+    q.summary[:,findfirst(s -> s == "50.0%", q.header)-1]
+end
+
 end # module
