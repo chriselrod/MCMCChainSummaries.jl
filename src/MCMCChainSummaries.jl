@@ -56,56 +56,68 @@ function Base.show(io::IO, s::MCMCChainSummary)
     show(io, s.quantiles)
 end
 
-function regularized_cov_block_quote(W::Int, T, reps_per_block::Int, stride, mask_last::Bool = false, mask = :r)# = 0xff)
-    # loads from ptr_sample
-    # stores in ptr_s² and ptr_invs
-    # needs vNinv, mulreg, and addreg to be defined
-    reps_per_block -= 1
-    size_T = sizeof(T)
-    WT = size_T*W
-    V = Vec{W,T}
-    quote
-        $([Expr(:(=), Symbol(:μ_,i), :(vload($V, ptr_smpl + $(WT*i), $([mask for _ ∈ 1:((i==reps_per_block) & mask_last)]...)))) for i ∈ 0:reps_per_block]...)
-        $([Expr(:(=), Symbol(:Σδ_,i), :(vbroadcast($V,zero($T)))) for i ∈ 0:reps_per_block]...)
-        $([Expr(:(=), Symbol(:Σδ²_,i), :(vbroadcast($V,zero($T)))) for i ∈ 0:reps_per_block]...)
-        for n ∈ 1:N-1
-            $([Expr(:(=), Symbol(:δ_,i), :(vsub(vload($V, ptr_smpl + $(WT*i) + n*$stride*$size_T),$(Symbol(:μ_,i))))) for i ∈ 0:reps_per_block]...)
-            $([Expr(:(=), Symbol(:Σδ_,i), :(vadd($(Symbol(:δ_,i)),$(Symbol(:Σδ_,i))))) for i ∈ 0:reps_per_block]...)
-            $([Expr(:(=), Symbol(:Σδ²_,i), :(vmuladd($(Symbol(:δ_,i)),$(Symbol(:δ_,i)),$(Symbol(:Σδ²_,i))))) for i ∈ 0:reps_per_block]...)
-        end
-        $([Expr(:(=), Symbol(:xbar_,i), :(vmuladd(vNinv, $(Symbol(:Σδ_,i)), $(Symbol(:μ_,i))))) for i ∈ 0:reps_per_block]...)
-        $([Expr(:(=), Symbol(:ΣδΣδ_,i), :(vmul($(Symbol(:Σδ_,i)),$(Symbol(:Σδ_,i))))) for i ∈ 0:reps_per_block]...)
-        $([Expr(:(=), Symbol(:s²_,i), :(vmul(vNm1inv,vfnmadd($(Symbol(:ΣδΣδ_,i)),vNinv,$(Symbol(:Σδ²_,i)))))) for i ∈ 0:reps_per_block]...)
-        $([:(vstore!(ptr_mean, $(Symbol(:xbar_,i)), $([mask for _ ∈ 1:((i==reps_per_block) & mask_last)]...)); ptr_mean += $WT) for i ∈ 0:reps_per_block]...)
-        $([:(vstore!(ptr_vars, $(Symbol(:s²_,i)), $([mask for _ ∈ 1:((i==reps_per_block) & mask_last)]...)); ptr_vars += $WT) for i ∈ 0:reps_per_block]...)
-        ptr_smpl += $(WT*(reps_per_block+1))
-    end
-end
-@generated function mean_and_var!(
+function mean_and_var!(
     means::AbstractVector{T}, vars::AbstractVector{T}, sample::AbstractArray{T}
 ) where {T}
+    V = VectorizationBase.pick_vector(T)
     W, Wshift = VectorizationBase.pick_vector_width_shift(T)
-    V = Vec{W,T}
-    quote 
-        D, N = size(sample); sample_stride = stride(sample, 2)
-        @boundscheck if length(means) < D || length(vars) < D
-            throw(BoundsError("Size of sample: ($D,$N); length of preallocated mean vector: $(length(means)); length of preallocated var vector: $(length(vars))"))
-        end
-        ptr_mean = pointer(means); ptr_vars = pointer(vars); ptr_smpl = pointer(sample)
-        vNinv = vbroadcast($V, 1/N); vNm1inv = vbroadcast($V, 1/(N-1))
-        for _ in 1:(D >>> $(Wshift + 2)) # blocks of 4 vectors
-            $(regularized_cov_block_quote(W, T, 4, :sample_stride))
-        end
-        for _ in 1:((D & $((W << 2)-1)) >>> $Wshift) # single vectors
-            $(regularized_cov_block_quote(W, T, 1, :sample_stride))
-        end
-        r = D & $(W-1)
-        if r > 0 # remainder
-            mask = VectorizationBase.mask(T, r)
-            $(regularized_cov_block_quote(W, T, 1, :sample_stride, true, :mask))
-        end
-        nothing
+    WT = VectorizationBase.REGISTER_SIZE
+    D, N = size(sample); sample_stride = stride(sample, 2) * sizeof(T)
+    @boundscheck if length(means) < D || length(vars) < D
+        throw(BoundsError("Size of sample: ($D,$N); length of preallocated mean vector: $(length(means)); length of preallocated var vector: $(length(vars))"))
     end
+    ptr_mean = pointer(means); ptr_vars = pointer(vars); ptr_smpl = pointer(sample)
+    vNinv = vbroadcast(V, 1/N); vNm1inv = vbroadcast(V, 1/(N-1))
+    for _ in 1:(D >>> (Wshift + 2)) # blocks of 4 vectors
+        Base.Cartesian.@nexprs 4 i -> μ_i = vload(V, ptr_smpl + WT * (i-1))
+        Base.Cartesian.@nexprs 4 i -> Σδ_i = vbroadcast(V, zero(T))
+        Base.Cartesian.@nexprs 4 i -> Σδ²_i = vbroadcast(V, zero(T))
+        for n ∈ 1:N-1
+            Base.Cartesian.@nexprs 4 i -> δ_i = vsub(vload(V, ptr_smpl + WT * (i-1) + n*sample_stride), μ_i)
+            Base.Cartesian.@nexprs 4 i -> Σδ_i = vadd(δ_i, Σδ_i)
+            Base.Cartesian.@nexprs 4 i -> Σδ²_i = vmuladd(δ_i, δ_i, Σδ²_i)
+        end
+        Base.Cartesian.@nexprs 4 i -> xbar_i = vmuladd(vNinv, Σδ_i, μ_i)
+        Base.Cartesian.@nexprs 4 i -> ΣδΣδ_i = vmul(Σδ_i, Σδ_i)
+        Base.Cartesian.@nexprs 4 i -> s²_i = vmul(vNm1inv, vfnmadd(ΣδΣδ_i, vNinv, Σδ²_i))
+        Base.Cartesian.@nexprs 4 i -> (vstore!(ptr_mean, xbar_i); ptr_mean += WT)
+        Base.Cartesian.@nexprs 4 i -> (vstore!(ptr_vars, s²_i); ptr_vars += WT)
+        ptr_smpl += 4WT
+    end
+    for _ in 1:((D & ((W << 2)-1)) >>> Wshift) # single vectors
+        μ_i = vload(V, ptr_smpl)
+        Σδ_i = vbroadcast(V, zero(T))
+        Σδ²_i = vbroadcast(V, zero(T))
+        for n ∈ 1:N-1
+            δ_i = vsub(vload(V, ptr_smpl + n*sample_stride), μ_i)
+            Σδ_i = vadd(δ_i, Σδ_i)
+            Σδ²_i = vmuladd(δ_i, δ_i, Σδ²_i)
+        end
+        xbar_i = vmuladd(vNinv, Σδ_i, μ_i)
+        ΣδΣδ_i = vmul(Σδ_i, Σδ_i)
+        s²_i = vmul(vNm1inv, vfnmadd(ΣδΣδ_i, vNinv, Σδ²_i))
+        vstore!(ptr_mean, xbar_i); ptr_mean += WT
+        vstore!(ptr_vars, s²_i); ptr_vars += WT
+        ptr_smpl += WT
+    end
+    r = D & (W-1)
+    if r > 0 # remainder
+        mask = VectorizationBase.mask(T, r)
+        μ_i = vload(V, ptr_smpl, mask)
+        Σδ_i = vbroadcast(V, zero(T))
+        Σδ²_i = vbroadcast(V, zero(T))
+        for n ∈ 1:N-1
+            δ_i = vsub(vload(V, ptr_smpl + n*sample_stride, mask), μ_i)
+            Σδ_i = vadd(δ_i, Σδ_i)
+            Σδ²_i = vmuladd(δ_i, δ_i, Σδ²_i)
+        end
+        xbar_i = vmuladd(vNinv, Σδ_i, μ_i)
+        ΣδΣδ_i = vmul(Σδ_i, Σδ_i)
+        s²_i = vmul(vNm1inv, vfnmadd(ΣδΣδ_i, vNinv, Σδ²_i))
+        vstore!(ptr_mean, xbar_i, mask)
+        vstore!(ptr_vars, s²_i, mask)
+    end
+    nothing
 end
 
 function quantile_names(q)
