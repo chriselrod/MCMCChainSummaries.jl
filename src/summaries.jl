@@ -41,7 +41,7 @@ end
 
 
 
-function MCMCChainSummary(chains_in::AbstractArray{Float64,3}, parameter_names::Vector{String}, quantiles = (0.025, 0.25, 0.5, 0.75, 0.975))
+function MCMCChainSummary(chains_in::AbstractArray{Float64,3}, parameter_names::Vector{String}, quantiles = (0.025, 0.25, 0.5, 0.75, 0.975), threaded::Bool = Threads.nthreads() > 1)
     D, N, C = size(chains_in)
     if iseven(N) # split chains
         N >>= 1
@@ -233,7 +233,7 @@ function MCMCChainSummary(chains_in::AbstractArray{Float64,3}, parameter_names::
         summary[d,3] = sqrt_d / Base.FastMath.sqrt_fast(ess_d)
     end
     NQ = length(quantiles)
-    dquantiles = if Threads.nthreads() > 1
+    dquantiles = if threaded
         calc_quantiles_threaded(reshape(chains,(D,N*C)), quantiles)
     else
         calc_quantiles(reshape(chains,(D,N*C)), quantiles)
