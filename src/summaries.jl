@@ -252,7 +252,7 @@ function MCMCChainSummary(chains_in::AbstractArray{Float64,3}, parameter_names::
     )
 end
 
-function MCMCChainSummary(chains_in::AbstractMatrix{Float64}, parameter_names::Vector{String}, quantiles = (0.025, 0.25, 0.5, 0.75, 0.975); threaded::Bool = Threads.nthreads > 1)
+function MCMCChainSummary(chains_in::AbstractMatrix{Float64}, parameter_names::Vector{String}, quantiles = (0.025, 0.25, 0.5, 0.75, 0.975); threaded::Bool = Threads.nthreads() > 1)
     M, N = size(chains_in)
     MCMCChainSummary(reshape(chains_in, (M,N,1)), parameter_names, quantiles, threaded = threaded)
 end
