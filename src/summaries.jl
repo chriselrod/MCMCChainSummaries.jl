@@ -57,7 +57,18 @@ function MCMCChainSummary(
     summary = Matrix{Float64}(undef, D, 5)
     means = @view(summary[:,1])
     B = @view(summary[:,2])
-    mean_and_var!(means, B, reshape(chain_means, (D,C)))
+    NQ = length(quantiles)
+    dquantiles = if threaded
+        calc_quantiles_threaded(reshape(chains,(D,N*C)), quantiles)
+    else
+        calc_quantiles(reshape(chains,(D,N*C)), quantiles)
+    end
+    median_ind = findfirst(q -> q == 0.5, quantiles)
+    if median_ind === nothing
+        mean_and_var!(means, B, reshape(chain_means, (D,C)))
+    else # if we calculate the median, it is more numerically accurate to use that rather than the first sample in mean_and_var!.
+        mean_and_var!(means, B, reshape(chain_means, (D,C)), @view(dquantiles[:,median_ind]))
+    end
     # Calculate all autocorrelations
     Np2 = VectorizationBase.nextpow2(N)
     padded_chains = Array{Float64,3}(undef, D, Np2, C)
@@ -236,12 +247,6 @@ function MCMCChainSummary(
         ess_d = sNC / tau_d
         summary[d,4] = ess_d
         summary[d,3] = sqrt_d / Base.FastMath.sqrt_fast(ess_d)
-    end
-    NQ = length(quantiles)
-    dquantiles = if threaded
-        calc_quantiles_threaded(reshape(chains,(D,N*C)), quantiles)
-    else
-        calc_quantiles(reshape(chains,(D,N*C)), quantiles)
     end
     # dquantiles = Matrix{Float64}(undef, D, NQ)
     # if NQ > 0
