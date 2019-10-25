@@ -1,7 +1,7 @@
 
 
 const SUMMARY_HEADER = ["Parameter", "Mean", "St.Dev.", "MCMC SE", "ESS", "PSRF"]
-const STANDARD_QUANTILES_HEADER = ["Parameter", "2.5%", "25%", "50%", "75%", "97.5"]
+const STANDARD_QUANTILES_HEADER = ["Parameter", "2.5%", "25%", "50%", "75%", "97.5%"]
 
 const SIGFIGS = Ref(5)
 
