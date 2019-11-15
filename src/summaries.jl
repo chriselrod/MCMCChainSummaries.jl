@@ -21,7 +21,7 @@ Base.getindex(s::Summary, i, j) = j == 1 ? s.parameter_names[i] : string(round(s
 
 # const LARGE_DIFF = Highlighter( (data,i,j) -> (j == 2 && data.summary[i,1] / data.summary[i,2] > 2 ), bold = false, foreground = :green )
 const SMALL_NEFF = Highlighter( (data,i,j) -> (j == 5 && data.summary[i,4] < 0.1 * (data.number_samples*data.number_chains) ), bold = false, foreground = :red )
-const PSRF_ALERT = Highlighter( (data,i,j) -> (j == 6 && data.summary[i,5] > 1.1 ), bold =  true, foreground = :red )
+const PSRF_ALERT = Highlighter( (data,i,j) -> (j == 6 && data.summary[i,5] > 1.05 ), bold =  true, foreground = :red )
 # const EXTREME_QT = Highlighter( (data,i,j) -> (((j == 2) | (j == 6)) && signbit(data.summary[i,j-1]) == (4<j) ), bold =  true, foreground = :green )
 # const MINOR_QTLE = Highlighter( (data,i,j) -> (((j == 3) | (j == 5)) && signbit(data.summary[i,j-1]) == (4<j) ), bold = false, foreground = :green )
     
