@@ -9,5 +9,7 @@ export MCMCChainSummary
 include("quantiles.jl")
 include("mean_and_variance.jl")
 include("summaries.jl")
+include("precompile.jl")
+_precompile_()
 
 end # module
