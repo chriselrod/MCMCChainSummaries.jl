@@ -4,7 +4,7 @@ using VectorizationBase, SIMDPirates
 using Statistics, FFTW
 using PrettyTables
 
-export MCMCChainSummary
+export MCMCChainSummary, print_latex
 
 include("quantiles.jl")
 include("mean_and_variance.jl")

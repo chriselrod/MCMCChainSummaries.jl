@@ -37,7 +37,11 @@ function Base.show(io::IO, s::MCMCChainSummary)
     show(io, s.summary)
     show(io, s.quantiles)
 end
-
+function print_latex(s::MCMCChainSummary)
+    s1 = s.summary; s2 = s.quantiles
+    pretty_table(s1, s1.header; highlighters = (SMALL_NEFF, PSRF_ALERT), crop = :none, backend = :latex )
+    pretty_table(s2, s2.header; crop = :none, backend = :latex )
+end
 
 
 
