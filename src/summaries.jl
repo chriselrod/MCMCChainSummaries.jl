@@ -108,6 +108,7 @@ function MCMCChainSummary(
     # https://mc-stan.org/docs/2_20/reference-manual/notation-for-samples-chains-and-draws.html
     # https://mc-stan.org/docs/2_20/reference-manual/effective-sample-size-section.html
     W, Wshift = VectorizationBase.pick_vector_width_shift(Float64)
+    WV = VectorizationBase.pick_vector_width_val(Float64)
     V = VectorizationBase.pick_vector(Float64)
     Ddiv4Witer = D >> (Wshift + 2)
     ptrstdev = pointer(summary) + 8D
@@ -127,15 +128,15 @@ function MCMCChainSummary(
         Base.Cartesian.@nexprs 4 j -> begin
             Wvar_j = vload(V, ptrcov)
             for c in 1:C-1
-                Wvar_j = vadd(Wvar_j, vload(V, ptrcov + c*Np2*8D))
+                Wvar_j = vadd(Wvar_j, vload(ptrcov, _MM(WV, c*Np2*D)))
             end
             Wvar_j = vmul(invWdenom, Wvar_j)
-            ptrcov += VectorizationBase.REGISTER_SIZE
+            ptrcov = gep(ptrcov, W)
         end
         Base.Cartesian.@nexprs 4 j -> begin
             B_j = vload(V, ptrb)
             var_j = vmuladd(nfrac, Wvar_j, B_j)
-            ptrb += VectorizationBase.REGISTER_SIZE
+            ptrb = gep(ptrb, W)
         end
         Base.Cartesian.@nexprs 4 j -> begin
             r̂²_j = vfdiv(var_j, Wvar_j)
@@ -144,113 +145,82 @@ function MCMCChainSummary(
         end
         Base.Cartesian.@nexprs 4 j -> begin
             vstore!(ptrstdev, sqrt_j)
-            ptrstdev += VectorizationBase.REGISTER_SIZE
+            ptrstdev = gep(ptrstdev, W)
             vstore!(ptrpsrf, rhat_j)
-            ptrpsrf += VectorizationBase.REGISTER_SIZE
+            ptrpsrf = gep(ptrpsrf, W)
         end
         Base.Cartesian.@nexprs 4 j -> begin
             prec_j = SIMDPirates.vfdiv(invWdenom, var_j)
             tau_j = SIMDPirates.vbroadcast(V, 1.0)
             mask_j = VectorizationBase.max_mask(Float64)
             for n in 1:Nh-1
-                ρ₊_j = vload(V, ptrar + (2n-1)*8D)
-                ρ₋_j = vload(V, ptrar + (2n  )*8D)
+                ρ₊_j = vload(ptrar, _MM(WV, (2n-1)*D))
+                ρ₋_j = vload(ptrar, _MM(WV, (2n  )*D))
                 for c in 1:C-1
-                    ρ₊_j = vadd(ρ₊_j, vload(V, ptrar + (c*Np2+2n-1)*8D))
-                    ρ₋_j = vadd(ρ₋_j, vload(V, ptrar + (c*Np2+2n  )*8D))
+                    ρ₊_j = vadd(ρ₊_j, vload(ptrar, _MM(WV, (c*Np2+2n-1)*D)))
+                    ρ₋_j = vadd(ρ₋_j, vload(ptrar, _MM(WV, (c*Np2+2n  )*D)))
                 end
-                bwa = vfnmadd(invn, Wvar_j, B_j)
-                p_j = vmul(vfmadd(invC, vadd(ρ₊_j, ρ₋_j), vadd(bwa,bwa)), prec_j)
+                bwa = vfnmadd_fast(invn, Wvar_j, B_j)
+                p_j = vmul(vfmadd_fast(invC, vadd(ρ₊_j, ρ₋_j), vadd(bwa,bwa)), prec_j)
                 # tau_j =  vadd(tau_j, p_j)
-                tau_j =  vifelse(mask_j, vmuladd(vbroadcast(V, 2.0), p_j, tau_j), tau_j)
-                mask_j = SIMDPirates.vand(mask_j, SIMDPirates.vgreater(p_j, SIMDPirates.vbroadcast(V, 0.0)))
+                tau_j =  extract_data(vifelse(mask_j, vfmadd_fast(vbroadcast(V, 2.0), p_j, tau_j), tau_j))
+                mask_j &= SIMDPirates.vgreater(p_j, SIMDPirates.vbroadcast(V, 0.0))
                 mask_j === zero(mask_j) && break
             end
             ess_j = vfdiv(NC, tau_j)
             mcmcse_j = vfdiv(sqrt_j, vsqrt(ess_j))
             vstore!(ptress, ess_j)
             vstore!(ptrmcmcse, mcmcse_j)
-            ptrar += VectorizationBase.REGISTER_SIZE
-            ptress += VectorizationBase.REGISTER_SIZE
-            ptrmcmcse += VectorizationBase.REGISTER_SIZE
+            ptrar = gep(ptrar, W)
+            ptress = gep(ptress, W)
+            ptrmcmcse = gep(ptrmcmcse, W)
         end
     end
-    Witer = (D & ((W << 2)-1)) >> Wshift
-    for _ in 1:Witer
-        Wvar_ = vload(V, ptrcov)
+#    Witer = (D & ((W << 2)-1)) >> Wshift
+    Witer = Ddiv4Witer << 2
+    #for _ in 1:Witer
+    while Witer < D
+        _mask = SIMDPirates.svrange(_MM(WV,Witer)) < D
+        Witer += W
+        Wvar_ = vload(V, ptrcov, _mask)
         for c in 1:C-1
-            Wvar_ = vadd(Wvar_, vload(V, ptrcov + c*Np2*8D))
+            Wvar_ = vadd(Wvar_, vload(ptrcov, _MM(WV, c*Np2*D), _mask))
         end
         Wvar_ = vmul(invWdenom, Wvar_)
-        ptrcov += VectorizationBase.REGISTER_SIZE
-        B_ = vload(V, ptrb)
+        ptrcov = gep(ptrcov, W)
+        B_ = vload(V, ptrb, _mask)
         var_ = vmuladd(nfrac, Wvar_, B_)
-        ptrb += VectorizationBase.REGISTER_SIZE
+        ptrb = gep(ptrb, W)
         r̂²_ = vfdiv(var_, Wvar_)
         sqrt_ = vsqrt(var_)
         rhat_ = vsqrt(r̂²_)
-        vstore!(ptrstdev, sqrt_)
-        ptrstdev += VectorizationBase.REGISTER_SIZE
-        vstore!(ptrpsrf, rhat_)
-        ptrpsrf += VectorizationBase.REGISTER_SIZE
+        vstore!(ptrstdev, sqrt_, _mask)
+        ptrstdev = gep(ptrstdev, W)
+        vstore!(ptrpsrf, rhat_, _mask)
+        ptrpsrf = gep(ptrpsrf, W)
         prec_ = SIMDPirates.vfdiv(invWdenom, var_)
         tau_ = SIMDPirates.vbroadcast(V, 1.0)
-        mask_ = VectorizationBase.max_mask(Float64)
+        mask_ = _mask
         for n in 1:Nh-1
-            ρ₊_ = vload(V, ptrar + (2n-1)*8D)
-            ρ₋_ = vload(V, ptrar + (2n  )*8D)
+            ρ₊_ = vload(ptrar, _MM(WV, (2n-1)*D), _mask)
+            ρ₋_ = vload(ptrar, _MM(WV, (2n  )*D), _mask)
             for c in 1:C-1
-                ρ₊_ = vadd(ρ₊_, vload(V, ptrar + (c*Np2+2n-1)*8D))
-                ρ₋_ = vadd(ρ₋_, vload(V, ptrar + (c*Np2+2n  )*8D))
+                ρ₊_ = vadd(ρ₊_, vload(ptrar, _MM(WV, (c*Np2+2n-1)*D), _mask))
+                ρ₋_ = vadd(ρ₋_, vload(ptrar, _MM(WV, (c*Np2+2n  )*D), _mask))
             end
-            bwa = vfnmadd(invn, Wvar_, B_)
-            p_ = vmul(vfmadd(invC, vadd(ρ₊_, ρ₋_), vadd(bwa,bwa)), prec_)
-            tau_ =  vifelse(mask_, vmuladd(vbroadcast(V, 2.0), p_, tau_), tau_)
-            mask_ = SIMDPirates.vand(mask_, SIMDPirates.vgreater(p_, SIMDPirates.vbroadcast(V, 0.0)))
+            bwa = vfnmadd_fast(invn, Wvar_, B_)
+            p_ = vmul(vfmadd_fast(invC, vadd(ρ₊_, ρ₋_), vadd(bwa,bwa)), prec_)
+            tau_ =  extract_data(vifelse(mask_, vfmadd_fast(vbroadcast(V, 2.0), p_, tau_), tau_))
+            mask_ &= SIMDPirates.vgreater(p_, SIMDPirates.vbroadcast(V, 0.0))
             mask_ === zero(mask_) && break
         end
         ess_ = vfdiv(NC, tau_)
         mcmcse_ = vfdiv(sqrt_, vsqrt(ess_))
-        vstore!(ptress, ess_)
-        vstore!(ptrmcmcse, mcmcse_)
-        ptrar += VectorizationBase.REGISTER_SIZE
-        ptress += VectorizationBase.REGISTER_SIZE
-        ptrmcmcse += VectorizationBase.REGISTER_SIZE
-    end
-    sinvWdenom = inv(C * (N-1) * Np2)
-    snfrac = (N-1) / N
-    sinvn = 1/N
-    sinvC = 1/C
-    sNC = Float64(N*C)
-    for d in 1+(D & (-W)):D
-        Wvar_d = 0.0
-        for c in 1:C
-            Wvar_d += padded_chains[d,1,c]
-        end
-        Wvar_d *= sinvWdenom
-        B_d = B[d]
-        var_d = muladd(snfrac, Wvar_d, B_d)
-        sqrt_d = sqrt(var_d)
-        summary[d,5] = sqrt(var_d / Wvar_d)
-        summary[d,2] = sqrt_d
-        prec_d = sinvWdenom / var_d
-        tau_d = 1.0
-        for n in 1:Nh-1
-            ρ₊_d = 0.0
-            ρ₋_d = 0.0
-            for c in 1:C
-                ρ₊_d += padded_chains[d,n,c]
-                ρ₋_d += padded_chains[d,n,c]
-            end
-            bwa_d = vfnmadd(sinvn, Wvar_d, B_d)
-            p_d = vfmadd(sinvC, ρ₊_d + ρ₋_d, bwa_d + bwa_d ) * prec_d
-            # tau_j =  vadd(tau_j, p_j)
-            tau_d =  muladd(2.0, p_d, tau_d)
-            p_d > 0.0 || break
-        end
-        ess_d = sNC / tau_d
-        summary[d,4] = ess_d
-        summary[d,3] = sqrt_d / Base.FastMath.sqrt_fast(ess_d)
+        vstore!(ptress, ess_, _mask)
+        vstore!(ptrmcmcse, mcmcse_, _mask)
+        ptrar = gep(ptrar, W)
+        ptress = gep(ptress, W)
+        ptrmcmcse = gep(ptrmcmcse, W)
     end
     # dquantiles = Matrix{Float64}(undef, D, NQ)
     # if NQ > 0
