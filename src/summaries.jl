@@ -177,7 +177,7 @@ function MCMCChainSummary(
         end
     end
 #    Witer = (D & ((W << 2)-1)) >> Wshift
-    Witer = Ddiv4Witer << 2
+    Witer = D & (-4W)
     #for _ in 1:Witer
     while Witer < D
         _mask = SIMDPirates.svrange(_MM(WV,Witer)) < D
