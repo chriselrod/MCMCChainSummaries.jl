@@ -50,8 +50,8 @@ const RADIX_MASK = 0x7FF
 end
 
 
-const BIN64 = [ Matrix{UInt32}(undef, 1 << RADIX_SIZE,  ceil(Integer, 8*8/RADIX_SIZE)) for _ in 1:Threads.nthreads() ]
-const CBIN = [ Vector{UInt32}(undef, 1 << RADIX_SIZE) for _ in 1:Threads.nthreads() ]
+const BIN64 = [ Matrix{UInt32}(undef, 1 << RADIX_SIZE,  ceil(Integer, 8*8/RADIX_SIZE)) for _ in 1:Sys.CPU_THREADS ]
+const CBIN = [ Vector{UInt32}(undef, 1 << RADIX_SIZE) for _ in 1:Sys.CPU_THREADS ]
 
 function bin_type(::Type{T}) where {T}
     sizeof(T) == 8 && return fill!(BIN64[Threads.threadid()], zero(UInt32))

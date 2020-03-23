@@ -79,7 +79,7 @@ function MCMCChainSummary(
     @inbounds for c in 1:C
         for n in 1:N
             @simd for d in 1:D
-                padded_chains[d,n,c] = chains[d,n,c] - chain_means[d,c]
+                padded_chains[d,n,c] = chains[d,n,c] - chain_means[d,1,c]
             end
         end
         for n in N+1:Np2, d in 1:D
@@ -111,10 +111,10 @@ function MCMCChainSummary(
     WV = VectorizationBase.pick_vector_width_val(Float64)
     V = VectorizationBase.pick_vector(Float64)
     Ddiv4Witer = D >> (Wshift + 2)
-    ptrstdev = pointer(summary) + 8D
-    ptrmcmcse = pointer(summary) + 16D
-    ptress = pointer(summary) + 24D
-    ptrpsrf = pointer(summary) + 32D
+    ptrstdev = gep(pointer(summary), D)
+    ptrmcmcse = gep(pointer(summary), 2D)
+    ptress = gep(pointer(summary), 3D)
+    ptrpsrf = gep(pointer(summary), 4D)
     ptrcov = pointer(padded_chains)
     ptrar = ptrcov
     ptrb = pointer(B)
@@ -124,111 +124,113 @@ function MCMCChainSummary(
     invC = vbroadcast(V, 1/C)
     NC = vbroadcast(V, Float64(N*C))
     Nh = N >> 1
-    for _ in 1:Ddiv4Witer
-        Base.Cartesian.@nexprs 4 j -> begin
-            Wvar_j = vload(V, ptrcov)
-            for c in 1:C-1
-                Wvar_j = vadd(Wvar_j, vload(ptrcov, _MM(WV, c*Np2*D)))
-            end
-            Wvar_j = vmul(invWdenom, Wvar_j)
-            ptrcov = gep(ptrcov, W)
-        end
-        Base.Cartesian.@nexprs 4 j -> begin
-            B_j = vload(V, ptrb)
-            var_j = vmuladd(nfrac, Wvar_j, B_j)
-            ptrb = gep(ptrb, W)
-        end
-        Base.Cartesian.@nexprs 4 j -> begin
-            r̂²_j = vfdiv(var_j, Wvar_j)
-            sqrt_j = vsqrt(var_j)
-            rhat_j = vsqrt(r̂²_j)
-        end
-        Base.Cartesian.@nexprs 4 j -> begin
-            vstore!(ptrstdev, sqrt_j)
-            ptrstdev = gep(ptrstdev, W)
-            vstore!(ptrpsrf, rhat_j)
-            ptrpsrf = gep(ptrpsrf, W)
-        end
-        Base.Cartesian.@nexprs 4 j -> begin
-            prec_j = SIMDPirates.vfdiv(invWdenom, var_j)
-            tau_j = SIMDPirates.vbroadcast(V, 1.0)
-            mask_j = VectorizationBase.max_mask(Float64)
-            for n in 1:Nh-1
-                ρ₊_j = vload(ptrar, _MM(WV, (2n-1)*D))
-                ρ₋_j = vload(ptrar, _MM(WV, (2n  )*D))
+    GC.@preserve summary padded_chains B begin
+        for _ in 1:Ddiv4Witer
+            Base.Cartesian.@nexprs 4 j -> begin
+                Wvar_j = vload(V, ptrcov)
                 for c in 1:C-1
-                    ρ₊_j = vadd(ρ₊_j, vload(ptrar, _MM(WV, (c*Np2+2n-1)*D)))
-                    ρ₋_j = vadd(ρ₋_j, vload(ptrar, _MM(WV, (c*Np2+2n  )*D)))
+                    Wvar_j = vadd(Wvar_j, vload(ptrcov, _MM(WV, c*Np2*D)))
                 end
-                bwa = vfnmadd_fast(invn, Wvar_j, B_j)
-                p_j = vmul(vfmadd_fast(invC, vadd(ρ₊_j, ρ₋_j), vadd(bwa,bwa)), prec_j)
-                # tau_j =  vadd(tau_j, p_j)
-                tau_j =  extract_data(vifelse(mask_j, vfmadd_fast(vbroadcast(V, 2.0), p_j, tau_j), tau_j))
-                mask_j &= SIMDPirates.vgreater(p_j, SIMDPirates.vbroadcast(V, 0.0))
-                mask_j === zero(mask_j) && break
+                Wvar_j = vmul(invWdenom, Wvar_j)
+                ptrcov = gep(ptrcov, W)
             end
-            ess_j = vfdiv(NC, tau_j)
-            mcmcse_j = vfdiv(sqrt_j, vsqrt(ess_j))
-            vstore!(ptress, ess_j)
-            vstore!(ptrmcmcse, mcmcse_j)
+            Base.Cartesian.@nexprs 4 j -> begin
+                B_j = vload(V, ptrb)
+                var_j = vmuladd(nfrac, Wvar_j, B_j)
+                ptrb = gep(ptrb, W)
+            end
+            Base.Cartesian.@nexprs 4 j -> begin
+                r̂²_j = vfdiv(var_j, Wvar_j)
+                sqrt_j = vsqrt(var_j)
+                rhat_j = vsqrt(r̂²_j)
+            end
+            Base.Cartesian.@nexprs 4 j -> begin
+                vstore!(ptrstdev, sqrt_j)
+                ptrstdev = gep(ptrstdev, W)
+                vstore!(ptrpsrf, rhat_j)
+                ptrpsrf = gep(ptrpsrf, W)
+            end
+            Base.Cartesian.@nexprs 4 j -> begin
+                prec_j = SIMDPirates.vfdiv(invWdenom, var_j)
+                tau_j = SIMDPirates.vbroadcast(V, 1.0)
+                mask_j = VectorizationBase.max_mask(Float64)
+                for n in 1:Nh-1
+                    ρ₊_j = vload(ptrar, _MM(WV, (2n-1)*D))
+                    ρ₋_j = vload(ptrar, _MM(WV, (2n  )*D))
+                    for c in 1:C-1
+                        ρ₊_j = vadd(ρ₊_j, vload(ptrar, _MM(WV, (c*Np2+2n-1)*D)))
+                        ρ₋_j = vadd(ρ₋_j, vload(ptrar, _MM(WV, (c*Np2+2n  )*D)))
+                    end
+                    bwa = vfnmadd_fast(invn, Wvar_j, B_j)
+                    p_j = vmul(vfmadd_fast(invC, vadd(ρ₊_j, ρ₋_j), vadd(bwa,bwa)), prec_j)
+                    # tau_j =  vadd(tau_j, p_j)
+                    tau_j =  extract_data(vifelse(mask_j, vfmadd_fast(vbroadcast(V, 2.0), p_j, tau_j), tau_j))
+                    mask_j &= SIMDPirates.vgreater(p_j, SIMDPirates.vbroadcast(V, 0.0))
+                    mask_j === zero(mask_j) && break
+                end
+                ess_j = vfdiv(NC, tau_j)
+                mcmcse_j = vfdiv(sqrt_j, vsqrt(ess_j))
+                vstore!(ptress, ess_j)
+                vstore!(ptrmcmcse, mcmcse_j)
+                ptrar = gep(ptrar, W)
+                ptress = gep(ptress, W)
+                ptrmcmcse = gep(ptrmcmcse, W)
+            end
+        end
+        #    Witer = (D & ((W << 2)-1)) >> Wshift
+        Witer = D & (-4W)
+        #for _ in 1:Witer
+        while Witer < D
+            _mask = SIMDPirates.svrange(_MM(WV,Witer)) < D
+            Witer += W
+            Wvar_ = vload(V, ptrcov, _mask)
+            for c in 1:C-1
+                Wvar_ = vadd(Wvar_, vload(ptrcov, _MM(WV, c*Np2*D), _mask))
+            end
+            Wvar_ = vmul(invWdenom, Wvar_)
+            ptrcov = gep(ptrcov, W)
+            B_ = vload(V, ptrb, _mask)
+            var_ = vmuladd(nfrac, Wvar_, B_)
+            ptrb = gep(ptrb, W)
+            r̂²_ = vfdiv(var_, Wvar_)
+            sqrt_ = vsqrt(var_)
+            rhat_ = vsqrt(r̂²_)
+            vstore!(ptrstdev, sqrt_, _mask)
+            ptrstdev = gep(ptrstdev, W)
+            vstore!(ptrpsrf, rhat_, _mask)
+            ptrpsrf = gep(ptrpsrf, W)
+            prec_ = SIMDPirates.vfdiv(invWdenom, var_)
+            tau_ = SIMDPirates.vbroadcast(V, 1.0)
+            mask_ = _mask
+            for n in 1:Nh-1
+                ρ₊_ = vload(ptrar, _MM(WV, (2n-1)*D), _mask)
+                ρ₋_ = vload(ptrar, _MM(WV, (2n  )*D), _mask)
+                for c in 1:C-1
+                    ρ₊_ = vadd(ρ₊_, vload(ptrar, _MM(WV, (c*Np2+2n-1)*D), _mask))
+                    ρ₋_ = vadd(ρ₋_, vload(ptrar, _MM(WV, (c*Np2+2n  )*D), _mask))
+                end
+                bwa = vfnmadd_fast(invn, Wvar_, B_)
+                p_ = vmul(vfmadd_fast(invC, vadd(ρ₊_, ρ₋_), vadd(bwa,bwa)), prec_)
+                tau_ =  extract_data(vifelse(mask_, vfmadd_fast(vbroadcast(V, 2.0), p_, tau_), tau_))
+                mask_ &= SIMDPirates.vgreater(p_, SIMDPirates.vbroadcast(V, 0.0))
+                mask_ === zero(mask_) && break
+            end
+            ess_ = vfdiv(NC, tau_)
+            mcmcse_ = vfdiv(sqrt_, vsqrt(ess_))
+            vstore!(ptress, ess_, _mask)
+            vstore!(ptrmcmcse, mcmcse_, _mask)
             ptrar = gep(ptrar, W)
             ptress = gep(ptress, W)
             ptrmcmcse = gep(ptrmcmcse, W)
         end
-    end
-#    Witer = (D & ((W << 2)-1)) >> Wshift
-    Witer = D & (-4W)
-    #for _ in 1:Witer
-    while Witer < D
-        _mask = SIMDPirates.svrange(_MM(WV,Witer)) < D
-        Witer += W
-        Wvar_ = vload(V, ptrcov, _mask)
-        for c in 1:C-1
-            Wvar_ = vadd(Wvar_, vload(ptrcov, _MM(WV, c*Np2*D), _mask))
-        end
-        Wvar_ = vmul(invWdenom, Wvar_)
-        ptrcov = gep(ptrcov, W)
-        B_ = vload(V, ptrb, _mask)
-        var_ = vmuladd(nfrac, Wvar_, B_)
-        ptrb = gep(ptrb, W)
-        r̂²_ = vfdiv(var_, Wvar_)
-        sqrt_ = vsqrt(var_)
-        rhat_ = vsqrt(r̂²_)
-        vstore!(ptrstdev, sqrt_, _mask)
-        ptrstdev = gep(ptrstdev, W)
-        vstore!(ptrpsrf, rhat_, _mask)
-        ptrpsrf = gep(ptrpsrf, W)
-        prec_ = SIMDPirates.vfdiv(invWdenom, var_)
-        tau_ = SIMDPirates.vbroadcast(V, 1.0)
-        mask_ = _mask
-        for n in 1:Nh-1
-            ρ₊_ = vload(ptrar, _MM(WV, (2n-1)*D), _mask)
-            ρ₋_ = vload(ptrar, _MM(WV, (2n  )*D), _mask)
-            for c in 1:C-1
-                ρ₊_ = vadd(ρ₊_, vload(ptrar, _MM(WV, (c*Np2+2n-1)*D), _mask))
-                ρ₋_ = vadd(ρ₋_, vload(ptrar, _MM(WV, (c*Np2+2n  )*D), _mask))
-            end
-            bwa = vfnmadd_fast(invn, Wvar_, B_)
-            p_ = vmul(vfmadd_fast(invC, vadd(ρ₊_, ρ₋_), vadd(bwa,bwa)), prec_)
-            tau_ =  extract_data(vifelse(mask_, vfmadd_fast(vbroadcast(V, 2.0), p_, tau_), tau_))
-            mask_ &= SIMDPirates.vgreater(p_, SIMDPirates.vbroadcast(V, 0.0))
-            mask_ === zero(mask_) && break
-        end
-        ess_ = vfdiv(NC, tau_)
-        mcmcse_ = vfdiv(sqrt_, vsqrt(ess_))
-        vstore!(ptress, ess_, _mask)
-        vstore!(ptrmcmcse, mcmcse_, _mask)
-        ptrar = gep(ptrar, W)
-        ptress = gep(ptress, W)
-        ptrmcmcse = gep(ptrmcmcse, W)
-    end
-    # dquantiles = Matrix{Float64}(undef, D, NQ)
-    # if NQ > 0
+        # dquantiles = Matrix{Float64}(undef, D, NQ)
+        # if NQ > 0
         # sorted_samples =  sort!(copy(reshape(chains,(D,N*C))'), dims = 1)
         # for d in 1:D
-            # dquantiles[d,:] .= quantile(@view(sorted_samples[:,d]), quantiles, sorted = true)
+        # dquantiles[d,:] .= quantile(@view(sorted_samples[:,d]), quantiles, sorted = true)
         # end
-    # end
+        # end
+    end
     D, N, C = size(chains_in)
     MCMCChainSummary(
         Summary(parameter_names, SUMMARY_HEADER, summary, N, C),
