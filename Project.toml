@@ -1,7 +1,7 @@
 name = "MCMCChainSummaries"
 uuid = "4bc3f321-9528-4c7a-aaa1-470f5edc6d51"
 authors = ["Chris Elrod"]
-version = "0.1.0"
+version = "0.1.1"
 
 [deps]
 FFTW = "7a1cc6ca-52ef-59f5-83cd-3a7055c09341"
