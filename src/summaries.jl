@@ -48,9 +48,10 @@ end
 function MCMCChainSummary(
     chains_in::AbstractArray{Float64,3},
     parameter_names::Vector{String} = ["x[$i]" for i ∈ 1:size(chains_in,1)],
-    quantiles = (0.025, 0.25, 0.5, 0.75, 0.975);
-    threaded::Bool = Threads.nthreads() > 1
+    quantiles = (0.025, 0.25, 0.5, 0.75, 0.975)
+    # threaded::Bool = Threads.nthreads() > 1
 )
+    threaded = true
     D, N, C = size(chains_in)
     if iseven(N) # split chains
         N >>= 1
@@ -76,9 +77,9 @@ function MCMCChainSummary(
     # Calculate all autocorrelations
     Np2 = VectorizationBase.nextpow2(N)
     padded_chains = Array{Float64,3}(undef, D, Np2, C)
-    @inbounds for c in 1:C
+    @inbounds @fastmath for c in 1:C
         for n in 1:N
-            @simd for d in 1:D
+            for d in 1:D
                 padded_chains[d,n,c] = chains[d,n,c] - chain_means[d,1,c]
             end
         end
@@ -94,7 +95,7 @@ function MCMCChainSummary(
         end
         for n in 2:Nh
             Nc = Np2 + 2 - n
-            @simd for d in 1:D
+            @simd ivdep for d in 1:D
                 padded_chains[d,n,c] = abs2(padded_chains[d,n,c]) + abs2(padded_chains[d,Nc,c])
                 padded_chains[d,Nc,c] = 0.0
             end
@@ -115,6 +116,8 @@ function MCMCChainSummary(
     ptrmcmcse = gep(pointer(summary), 2D)
     ptress = gep(pointer(summary), 3D)
     ptrpsrf = gep(pointer(summary), 4D)
+    # @show size(padded_chains)
+    # @show padded_chains[:,2:3,:] ./ padded_chains[:,1:1,:]
     ptrcov = pointer(padded_chains)
     ptrar = ptrcov
     ptrb = pointer(B)
@@ -129,19 +132,21 @@ function MCMCChainSummary(
             Base.Cartesian.@nexprs 4 j -> begin
                 Wvar_j = vload(V, ptrcov)
                 for c in 1:C-1
-                    Wvar_j = vadd(Wvar_j, vload(ptrcov, _MM(WV, c*Np2*D)))
+                    Wvar_j = extract_data(vadd(Wvar_j, vload(ptrcov, _MM(WV, c*Np2*D))))
                 end
-                Wvar_j = vmul(invWdenom, Wvar_j)
+                Wvar_j = extract_data(vmul(invWdenom, Wvar_j))
                 ptrcov = gep(ptrcov, W)
             end
             Base.Cartesian.@nexprs 4 j -> begin
                 B_j = vload(V, ptrb)
                 var_j = vmuladd(nfrac, Wvar_j, B_j)
                 ptrb = gep(ptrb, W)
+                bwa_j = vfnmadd_fast(invn, Wvar_j, B_j)
+                bwa_j = vadd(bwa_j, bwa_j)
             end
             Base.Cartesian.@nexprs 4 j -> begin
                 r̂²_j = vfdiv(var_j, Wvar_j)
-                sqrt_j = vsqrt(var_j)
+                sqrt_j = extract_data(vsqrt(var_j))
                 rhat_j = vsqrt(r̂²_j)
             end
             Base.Cartesian.@nexprs 4 j -> begin
@@ -152,19 +157,25 @@ function MCMCChainSummary(
             end
             Base.Cartesian.@nexprs 4 j -> begin
                 prec_j = SIMDPirates.vfdiv(invWdenom, var_j)
-                tau_j = SIMDPirates.vbroadcast(V, 1.0)
+                ρ_j = vload(ptrar, _MM(WV, D))
+                for c in 1:C-1
+                    ρ_j = vadd(ρ_j, vload(ptrar, _MM(WV, (c*Np2+1)*D)))
+                end
+                p_j = vmul(vfmadd_fast(invC, ρ_j, bwa_j), prec_j)
+                # tau_j =  vadd(tau_j, p_j)
+                tau_j =  extract_data(vfmadd_fast(vbroadcast(V, 4.0), p_j, SIMDPirates.vbroadcast(V, 1.0)))
+                # tau_j = extract_data(SIMDPirates.vbroadcast(V, 1.0))
                 mask_j = VectorizationBase.max_mask(Float64)
-                for n in 1:Nh-1
-                    ρ₊_j = vload(ptrar, _MM(WV, (2n-1)*D))
+                for n in 1:Nh-2
                     ρ₋_j = vload(ptrar, _MM(WV, (2n  )*D))
+                    ρ₊_j = vload(ptrar, _MM(WV, (2n+1)*D))
                     for c in 1:C-1
-                        ρ₊_j = vadd(ρ₊_j, vload(ptrar, _MM(WV, (c*Np2+2n-1)*D)))
                         ρ₋_j = vadd(ρ₋_j, vload(ptrar, _MM(WV, (c*Np2+2n  )*D)))
+                        ρ₊_j = vadd(ρ₊_j, vload(ptrar, _MM(WV, (c*Np2+2n+1)*D)))
                     end
-                    bwa = vfnmadd_fast(invn, Wvar_j, B_j)
-                    p_j = vmul(vfmadd_fast(invC, vadd(ρ₊_j, ρ₋_j), vadd(bwa,bwa)), prec_j)
+                    p_j = vmul(vfmadd_fast(invC, vadd(ρ₊_j, ρ₋_j), bwa_j), prec_j)
                     # tau_j =  vadd(tau_j, p_j)
-                    tau_j =  extract_data(vifelse(mask_j, vfmadd_fast(vbroadcast(V, 2.0), p_j, tau_j), tau_j))
+                    tau_j =  extract_data(vifelse(mask_j, vfmadd_fast(vbroadcast(V, 4.0), p_j, tau_j), tau_j))
                     mask_j &= SIMDPirates.vgreater(p_j, SIMDPirates.vbroadcast(V, 0.0))
                     mask_j === zero(mask_j) && break
                 end
@@ -185,35 +196,44 @@ function MCMCChainSummary(
             Witer += W
             Wvar_ = vload(V, ptrcov, _mask)
             for c in 1:C-1
-                Wvar_ = vadd(Wvar_, vload(ptrcov, _MM(WV, c*Np2*D), _mask))
+                Wvar_ = extract_data(vadd(Wvar_, vload(ptrcov, _MM(WV, c*Np2*D), _mask)))
             end
-            Wvar_ = vmul(invWdenom, Wvar_)
+            Wvar_ = extract_data(vmul(invWdenom, Wvar_))
             ptrcov = gep(ptrcov, W)
             B_ = vload(V, ptrb, _mask)
             var_ = vmuladd(nfrac, Wvar_, B_)
             ptrb = gep(ptrb, W)
             r̂²_ = vfdiv(var_, Wvar_)
-            sqrt_ = vsqrt(var_)
+            sqrt_ = extract_data(vsqrt(var_))
             rhat_ = vsqrt(r̂²_)
             vstore!(ptrstdev, sqrt_, _mask)
             ptrstdev = gep(ptrstdev, W)
             vstore!(ptrpsrf, rhat_, _mask)
             ptrpsrf = gep(ptrpsrf, W)
             prec_ = SIMDPirates.vfdiv(invWdenom, var_)
-            tau_ = SIMDPirates.vbroadcast(V, 1.0)
             mask_ = _mask
-            for n in 1:Nh-1
-                ρ₊_ = vload(ptrar, _MM(WV, (2n-1)*D), _mask)
+            bwa = vfnmadd_fast(invn, Wvar_, B_)
+            bwa = vadd(bwa, bwa)
+            ρ_ = vload(ptrar, _MM(WV, D), _mask)
+            for c in 1:C-1
+                ρ_ = vadd(ρ_, vload(ptrar, _MM(WV, (c*Np2+1)*D), _mask))
+            end
+            ρ_ = vmul(vfmadd_fast(invC, ρ_, bwa), prec_)
+            tau_ =  extract_data(vfmadd_fast(vbroadcast(V, 4.0), ρ_, SIMDPirates.vbroadcast(V, 1.0)))
+            # tau_ =  extract_data(SIMDPirates.vbroadcast(V, 1.0))
+            for n in 1:Nh-2
                 ρ₋_ = vload(ptrar, _MM(WV, (2n  )*D), _mask)
+                ρ₊_ = vload(ptrar, _MM(WV, (2n+1)*D), _mask)
                 for c in 1:C-1
-                    ρ₊_ = vadd(ρ₊_, vload(ptrar, _MM(WV, (c*Np2+2n-1)*D), _mask))
                     ρ₋_ = vadd(ρ₋_, vload(ptrar, _MM(WV, (c*Np2+2n  )*D), _mask))
+                    ρ₊_ = vadd(ρ₊_, vload(ptrar, _MM(WV, (c*Np2+2n+1)*D), _mask))
                 end
-                bwa = vfnmadd_fast(invn, Wvar_, B_)
-                p_ = vmul(vfmadd_fast(invC, vadd(ρ₊_, ρ₋_), vadd(bwa,bwa)), prec_)
-                tau_ =  extract_data(vifelse(mask_, vfmadd_fast(vbroadcast(V, 2.0), p_, tau_), tau_))
+                p_ = vmul(vfmadd_fast(invC, vadd(ρ₊_, ρ₋_), bwa), prec_)
+                tau_ =  extract_data(vifelse(mask_, vfmadd_fast(vbroadcast(V, 4.0), p_, tau_), tau_))
+                # @show SIMDPirates.vgreater(p_, SIMDPirates.vbroadcast(V, 0.0))
                 mask_ &= SIMDPirates.vgreater(p_, SIMDPirates.vbroadcast(V, 0.0))
                 mask_ === zero(mask_) && break
+                # @show SIMDPirates.vgreater(p_, SIMDPirates.vbroadcast(V, 0.0)) === zero(mask_) && break
             end
             ess_ = vfdiv(NC, tau_)
             mcmcse_ = vfdiv(sqrt_, vsqrt(ess_))
