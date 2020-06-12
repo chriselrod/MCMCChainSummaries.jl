@@ -132,7 +132,7 @@ function MCMCChainSummary(
             Base.Cartesian.@nexprs 4 j -> begin
                 Wvar_j = vload(V, ptrcov)
                 for c in 1:C-1
-                    Wvar_j = extract_data(vadd(Wvar_j, vload(ptrcov, _MM(WV, c*Np2*D))))
+                    Wvar_j = extract_data(vadd(Wvar_j, vload(V, ptrcov, 8c*Np2*D)))
                 end
                 Wvar_j = extract_data(vmul(invWdenom, Wvar_j))
                 ptrcov = gep(ptrcov, W)
@@ -157,9 +157,9 @@ function MCMCChainSummary(
             end
             Base.Cartesian.@nexprs 4 j -> begin
                 prec_j = SIMDPirates.vfdiv(invWdenom, var_j)
-                ρ_j = vload(ptrar, _MM(WV, D))
+                ρ_j = vload(V, ptrar, 8D)
                 for c in 1:C-1
-                    ρ_j = vadd(ρ_j, vload(ptrar, _MM(WV, (c*Np2+1)*D)))
+                    ρ_j = vadd(ρ_j, vload(V, ptrar, 8(c*Np2+1)*D))
                 end
                 p_j = vmul(vfmadd_fast(invC, ρ_j, bwa_j), prec_j)
                 # tau_j =  vadd(tau_j, p_j)
@@ -167,11 +167,11 @@ function MCMCChainSummary(
                 # tau_j = extract_data(SIMDPirates.vbroadcast(V, 1.0))
                 mask_j = VectorizationBase.max_mask(Float64)
                 for n in 1:Nh-2
-                    ρ₋_j = vload(ptrar, _MM(WV, (2n  )*D))
-                    ρ₊_j = vload(ptrar, _MM(WV, (2n+1)*D))
+                    ρ₋_j = vload(V, ptrar, 8(2n  )*D)
+                    ρ₊_j = vload(V, ptrar, 8(2n+1)*D)
                     for c in 1:C-1
-                        ρ₋_j = vadd(ρ₋_j, vload(ptrar, _MM(WV, (c*Np2+2n  )*D)))
-                        ρ₊_j = vadd(ρ₊_j, vload(ptrar, _MM(WV, (c*Np2+2n+1)*D)))
+                        ρ₋_j = vadd(ρ₋_j, vload(V, ptrar, 8(c*Np2+2n  )*D))
+                        ρ₊_j = vadd(ρ₊_j, vload(V, ptrar, 8(c*Np2+2n+1)*D))
                     end
                     p_j = vmul(vfmadd_fast(invC, vadd(ρ₊_j, ρ₋_j), bwa_j), prec_j)
                     # tau_j =  vadd(tau_j, p_j)
@@ -192,11 +192,11 @@ function MCMCChainSummary(
         Witer = D & (-4W)
         #for _ in 1:Witer
         while Witer < D
-            _mask = SIMDPirates.svrange(_MM(WV,Witer)) < D
+            _mask = SIMDPirates.vless(SIMDPirates.vrange(_MM(WV,Witer)), D)
             Witer += W
             Wvar_ = vload(V, ptrcov, _mask)
             for c in 1:C-1
-                Wvar_ = extract_data(vadd(Wvar_, vload(ptrcov, _MM(WV, c*Np2*D), _mask)))
+                Wvar_ = extract_data(vadd(Wvar_, vload(V, ptrcov, 8c*Np2*D, _mask)))
             end
             Wvar_ = extract_data(vmul(invWdenom, Wvar_))
             ptrcov = gep(ptrcov, W)
@@ -214,19 +214,21 @@ function MCMCChainSummary(
             mask_ = _mask
             bwa = vfnmadd_fast(invn, Wvar_, B_)
             bwa = vadd(bwa, bwa)
-            ρ_ = vload(ptrar, _MM(WV, D), _mask)
+            ρ_ = vload(V, ptrar, 8D, _mask)
+                # @show ρ_
             for c in 1:C-1
-                ρ_ = vadd(ρ_, vload(ptrar, _MM(WV, (c*Np2+1)*D), _mask))
+                ρ_ = vadd(ρ_, vload(V, ptrar, 8(c*Np2+1)*D, _mask))
             end
             ρ_ = vmul(vfmadd_fast(invC, ρ_, bwa), prec_)
             tau_ =  extract_data(vfmadd_fast(vbroadcast(V, 4.0), ρ_, SIMDPirates.vbroadcast(V, 1.0)))
             # tau_ =  extract_data(SIMDPirates.vbroadcast(V, 1.0))
             for n in 1:Nh-2
-                ρ₋_ = vload(ptrar, _MM(WV, (2n  )*D), _mask)
-                ρ₊_ = vload(ptrar, _MM(WV, (2n+1)*D), _mask)
+                ρ₋_ = vload(V, ptrar, 8(2n  )*D, _mask)
+                ρ₊_ = vload(V, ptrar, 8(2n+1)*D, _mask)
+                # @show ρ₊_, ρ₋_
                 for c in 1:C-1
-                    ρ₋_ = vadd(ρ₋_, vload(ptrar, _MM(WV, (c*Np2+2n  )*D), _mask))
-                    ρ₊_ = vadd(ρ₊_, vload(ptrar, _MM(WV, (c*Np2+2n+1)*D), _mask))
+                    ρ₋_ = vadd(ρ₋_, vload(V, ptrar, 8(c*Np2+2n  )*D, _mask))
+                    ρ₊_ = vadd(ρ₊_, vload(V, ptrar, 8(c*Np2+2n+1)*D, _mask))
                 end
                 p_ = vmul(vfmadd_fast(invC, vadd(ρ₊_, ρ₋_), bwa), prec_)
                 tau_ =  extract_data(vifelse(mask_, vfmadd_fast(vbroadcast(V, 4.0), p_, tau_), tau_))
@@ -250,7 +252,7 @@ function MCMCChainSummary(
         # dquantiles[d,:] .= quantile(@view(sorted_samples[:,d]), quantiles, sorted = true)
         # end
         # end
-    end
+    end # GC preserve
     D, N, C = size(chains_in)
     MCMCChainSummary(
         Summary(parameter_names, SUMMARY_HEADER, summary, N, C),

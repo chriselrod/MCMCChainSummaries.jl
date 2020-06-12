@@ -2,7 +2,7 @@ using MCMCChainSummaries
 using Test
 
 @testset "MCMCChainSummaries.jl" begin
-    samples = 9999; nchains = 17;
+    nchains = 17;
     for samples ∈ 9_999:10_000
         for P in 15:33
             chn_sm = MCMCChainSummary(randn(P,samples,nchains))
